@@ -1,5 +1,7 @@
 # folder-undo
 
+![folder-undo: a copy before the shell deletes it](docs/folder-undo_banner.png)
+
 Keeps a copy of a file right before a shell command deletes, moves or overwrites it — the part Claude Code's rewind doesn't cover.
 
 Claude Code's checkpoints track the edits made by its file editing tools. Its documentation lists

@@ -2,6 +2,11 @@
 
 ![folder-undo: a copy before the shell deletes it](docs/folder-undo_banner.png)
 
+**Not a developer?**
+- A file Claude Code deletes with a command skips the Recycle Bin, and Claude Code's rewind (`/rewind`) can't bring it back.
+- To set it up, open Claude Code in your folder and say: "Install folder-undo from https://github.com/vivaminima/folder-undo. Save folder_undo.py in this folder and show me the dry run first." Then start a new session there. You need Python 3.10 or newer.
+- If files go missing, say: "Use folder-undo to show me what it can bring back, then restore it."
+
 Keeps a copy of a file right before a shell command deletes, moves or overwrites it — the part Claude Code's rewind doesn't cover.
 
 Claude Code's checkpoints track the edits made by its file editing tools. Its documentation lists
@@ -100,7 +105,7 @@ What is left alone, by design:
 
 Folder Undo Pro adds restore points for the last 10 sessions, the version history of one file,
 an HTML report of what changed in each session, and an optional stop for commands that reach
-outside the project. More tools by Vivaminima: https://vivastory4.gumroad.com
+outside the project. Folder Undo Pro ($19): https://vivastory4.gumroad.com/l/folder-undo-pro
 
 ## Licence
 

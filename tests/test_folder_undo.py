@@ -725,5 +725,70 @@ class InstallTest(Base):
         self.assertEqual(self.copied(), {"a.txt"})
 
 
+BOM_Y = b"\xef\xbb\xbfy\r\n"          # what Windows PowerShell 5.1 pipes for "y" when its output encoding is UTF-8
+
+
+def ps_quote(text):
+    return "'" + text.replace("'", "''") + "'"
+
+
+class PipedAnswerCases:
+    """An answer that a script or an agent pipes in instead of typing it. Windows PowerShell 5.1 can put a
+    UTF-8 byte order mark in front of it, and a Korean Windows console reads stdin as cp949 (forced here)."""
+
+    def piped(self, *argv, data=BOM_Y):
+        env = dict(os.environ, PYTHONIOENCODING="cp949", PYTHONUTF8="0")
+        done = subprocess.run([sys.executable, self.script, "--project", self.root] + list(argv), input=data, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        return done.returncode, done.stdout.decode("cp949", "replace") + done.stderr.decode("cp949", "replace")
+
+    def settings(self):
+        return os.path.join(self.root, ".claude", "settings.json")
+
+    def test_piped_y_with_a_byte_order_mark_installs(self):
+        code, text = self.piped("install")
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("Cancelled", text)
+        self.assertIn("Written and read back", text)
+        command = fu.read_json(self.settings())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertIn(os.path.basename(self.script), command)
+        code, text = self.piped("uninstall")
+        self.assertEqual(code, 0, text)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".claude")))
+
+    def test_piped_y_with_a_byte_order_mark_restores(self):
+        self.put("a.txt", "a1\n")
+        self.pre("rm a.txt", "Bash")
+        os.remove(os.path.join(self.root, "a.txt"))
+        code, text = self.piped("restore", self.proj.copies()[0]["id"])
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("Cancelled", text)
+        self.assertEqual(self.text("a.txt"), "a1\n")
+
+    def test_piped_no_or_nothing_still_cancels(self):
+        for data in (b"\xef\xbb\xbfn\r\n", b"\xef\xbb\xbf\r\n", b"", b"\xef\xbb\xbfyes please\r\n",
+                     b"\xc7\xd1\r\n"):                                   # one Hangul syllable in cp949, not UTF-8
+            code, text = self.piped("install", data=data)
+            self.assertEqual(code, 0, text)
+            self.assertIn("Cancelled", text)
+            self.assertFalse(os.path.exists(os.path.join(self.root, ".claude")))
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell is not on this machine")
+    def test_real_powershell_pipe_installs(self):
+        command = ("$OutputEncoding = New-Object System.Text.UTF8Encoding $true; 'y' | & %s %s --project %s install"
+                   % (ps_quote(sys.executable), ps_quote(self.script), ps_quote(self.root)))
+        env = dict(os.environ, PYTHONIOENCODING="cp949", PYTHONUTF8="0")
+        done = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", command], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        text = done.stdout.decode("cp949", "replace") + done.stderr.decode("cp949", "replace")
+        self.assertEqual(done.returncode, 0, text)
+        self.assertNotIn("Cancelled", text)
+        self.assertTrue(os.path.exists(self.settings()), text)
+
+
+class PipedAnswerTest(PipedAnswerCases, Base):
+    pass
+
+
 if __name__ == "__main__":
     unittest.main()

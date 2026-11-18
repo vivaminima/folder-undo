@@ -29,13 +29,14 @@ import fnmatch
 import glob
 import hashlib
 import json
+import locale
 import os
 import re
 import shutil
 import subprocess
 import sys
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 PROG = "folder_undo.py"
 DIR = ".folder-undo"
 DEFAULT_IGNORE = [".git", "node_modules", ".venv", "__pycache__", DIR]
@@ -1226,6 +1227,26 @@ class IO:
         self.out, self.ask = out, ask
 
 
+def ask_line(prompt):
+    """input(), but the answer is read as bytes. Windows PowerShell 5.1 can put a UTF-8 byte order mark in
+    front of a piped "y", and a console whose code page is not UTF-8 would then misread the whole line."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    stream = getattr(sys.stdin, "buffer", None)
+    if stream is None:
+        return input()
+    raw = stream.readline()
+    if not raw:
+        raise EOFError
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode(locale.getpreferredencoding(False) or "utf-8", "replace")
+    return text.rstrip("\r\n")
+
+
 def build_parser(edition=None):
     prog = edition.prog if edition else PROG
     parser = argparse.ArgumentParser(prog=prog, allow_abbrev=False, description=__doc__.split("\n")[0])
@@ -1298,7 +1319,7 @@ def main(argv=None, edition=None, home=None, out=None, ask=None, stdin=None):
         except BaseException:
             return 0
     args = build_parser(edition).parse_args(argv)
-    io = IO(out or sys.stdout, ask or input)
+    io = IO(out or sys.stdout, ask or ask_line)
     script = edition.script if edition else os.path.abspath(__file__)
     try:
         root = find_root(args.project)

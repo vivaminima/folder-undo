@@ -97,7 +97,7 @@ What is left alone, by design:
 - Python 3.10 or newer. No pip install: one file, standard library only.
 - No network calls.
 - Claude Code with hooks (`PreToolUse` for the Bash and PowerShell tools, and `SessionStart`).
-- Tested on Windows 11 with Python 3.10 and Windows PowerShell 5.1: 52 tests, also run in a console
+- Tested on Windows 11 with Python 3.10 and Windows PowerShell 5.1: 56 tests, also run in a console
   that cannot print every character (cp949). Run them yourself with
   `python -m unittest discover -s tests`.
 

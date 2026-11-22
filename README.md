@@ -1,12 +1,14 @@
 # folder-undo
 
-![folder-undo: a copy before the shell deletes it](docs/folder-undo_banner.png)
+![folder-undo: a copy right before the AI deletes your files, and one line brings them back](docs/folder-undo_story.gif)
 
 **You asked AI to tidy a folder. Now the files are gone?**
 
 When Claude deletes files with a command, they skip the Recycle Bin. Claude Code's /rewind can't bring them back either. folder-undo copies each file right before it gets deleted. Lost something? Just say "bring it back."
 
 We tried it ourselves, in a real Claude Code window. We wiped a docs folder with one command and brought every file back. Not one character changed, and the modified times match too.
+
+![The whole story in 4 panels: hand a folder job to the AI, copied right before the delete, not in the Recycle Bin or /rewind, one line brings it all back](docs/folder-undo_4panels.png)
 
 **This free version is a one-time trial: it restores once on each PC.** To keep restoring, use [Folder Undo Pro](https://vivastory4.gumroad.com/l/folder-undo-pro?utm_source=github-readme).
 
@@ -36,6 +38,8 @@ When files are gone, tell Claude:
 "Show me what you can restore, then restore it"
 
 ## Folder Undo Pro
+
+![What you get with Folder Undo Pro: buy on Gumroad, one zip with Python 3.13 for Windows, runs in Claude Code](docs/folder-undo_pro_get.png)
 
 Pay once. Using the free version already? One y switches you to Pro.
 

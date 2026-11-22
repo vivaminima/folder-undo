@@ -2,11 +2,6 @@
 
 ![folder-undo: a copy before the shell deletes it](docs/folder-undo_banner.png)
 
-**Not a developer?**
-- A file Claude Code deletes with a command skips the Recycle Bin, and Claude Code's rewind (`/rewind`) can't bring it back.
-- To set it up, open Claude Code in your folder and say: "Install folder-undo from https://github.com/vivaminima/folder-undo. Save folder_undo.py in this folder and show me the dry run first." Then start a new session there. You need Python 3.10 or newer.
-- If files go missing, say: "Use folder-undo to show me what it can bring back, then restore it."
-
 Keeps a copy of a file right before a shell command deletes, moves or overwrites it — the part Claude Code's rewind doesn't cover.
 
 Claude Code's checkpoints track the edits made by its file editing tools. Its documentation lists
@@ -25,6 +20,18 @@ folder-undo is one Python file and two hooks:
 Reading a command does not catch every form (for example, a file deleted from inside a script).
 That is why a restore point of the whole folder is kept when a session starts. Restore points for
 several sessions and a report are in Pro.
+
+## What the free edition does
+
+Copies are always made, as often as a command needs one. `list` and `show` are always open.
+**`restore` puts files back once on each PC.** Run it on the file that matters most. After that,
+your copies stay in `.folder-undo/`, `restore` prints where they are and the way to Folder Undo Pro
+(exit code 3), and Pro puts them back in one step, as often as you like, from the same copies.
+
+The count is kept per PC in a small file: `%LOCALAPPDATA%\folder-undo\usage.json` on Windows,
+`~/.local/state/folder-undo/usage.json` elsewhere. A restore counts when it writes at least one
+file. Typing `n` at the question, or a restore that has nothing to write, does not count.
+`restore --dry-run` is always open.
 
 ## Quick start
 
@@ -97,16 +104,20 @@ What is left alone, by design:
 - Python 3.10 or newer. No pip install: one file, standard library only.
 - No network calls.
 - Claude Code with hooks (`PreToolUse` for the Bash and PowerShell tools, and `SessionStart`).
-- Tested on Windows 11 with Python 3.10 and Windows PowerShell 5.1: 56 tests, also run in a console
+- Tested on Windows 11 with Python 3.10 and Windows PowerShell 5.1: 71 tests, also run in a console
   that cannot print every character (cp949). Run them yourself with
   `python -m unittest discover -s tests`.
 
 ## Pro
 
-Folder Undo Pro adds restore points for the last 10 sessions, the version history of one file,
-an HTML report of what changed in each session, and an optional stop for commands that reach
-outside the project. Folder Undo Pro ($19): https://vivastory4.gumroad.com/l/folder-undo-pro
+Folder Undo Pro restores as often as you like, and adds restore points for the last 10 sessions,
+the version history of one file, an HTML report of what changed in each session, and an optional
+stop for commands that reach outside the project. A copy the free edition made is put back
+by Pro as it is.
+Link: https://vivastory4.gumroad.com/l/folder-undo-pro
 
 ## Licence
 
 MIT, see `LICENSE`.
+
+folder-undo is an independent project by Vivaminima, not affiliated with, endorsed by, or sponsored by Anthropic; Claude and Claude Code are trademarks of Anthropic.

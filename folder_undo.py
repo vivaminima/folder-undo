@@ -14,7 +14,7 @@ Commands you run yourself:
 
   list                         what is kept
   show <id>                    one copy or restore point in detail
-  restore <id> [path ...]      put files back from a copy (shows the plan, then asks)
+  restore <id> [path ...]      put files back from a copy (shows the plan, then asks). Free: once per PC
   restore --session [path ...] put the folder back to how it was when the session started
   prune --keep N               drop all but the newest N copies
   install / uninstall          turn the hooks on or off for one project (--dry-run to look first)
@@ -36,8 +36,10 @@ import shutil
 import subprocess
 import sys
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 PROG = "folder_undo.py"
+PRO_URL = "https://vivastory4.gumroad.com/l/folder-undo-pro?utm_source=folder-undo-free&utm_medium=cli&utm_campaign=folder-undo-pro"
+FREE_RESTORES = 1
 DIR = ".folder-undo"
 DEFAULT_IGNORE = [".git", "node_modules", ".venv", "__pycache__", DIR]
 DEFAULTS = {"copy_limit_mb": 200, "snapshot_limit_mb": 500}
@@ -839,6 +841,52 @@ def hook_session(proj, data, keep=1):
     return snapshot(proj, str(data.get("session_id") or ""), str(data.get("source") or ""), keep)[1]
 
 
+# --------------------------------------------------------------------------- free edition: one restore per PC
+
+RUN = {"pro": False, "edition": None}
+
+
+def pro_here():
+    """True when this run is Folder Undo Pro: started from folder_undo_pro.py, or that file sits next to this one."""
+    forced = os.environ.get("FOLDER_UNDO_EDITION", "").lower()
+    if forced in ("free", "pro"):
+        return forced == "pro"
+    return RUN["pro"] or os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)), "folder_undo_pro.py"))
+
+
+def usage_file():
+    folder = os.environ.get("FOLDER_UNDO_STATE_DIR")
+    if not folder:
+        if os.name == "nt":
+            base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+            folder = os.path.join(base, "folder-undo")
+        else:
+            folder = os.path.join(os.path.expanduser("~"), ".local", "state", "folder-undo")
+    return os.path.join(folder, "usage.json")
+
+
+def restores_used():
+    """How many restores this PC has done. A file that is missing or cannot be read counts as 0."""
+    data = read_json(usage_file(), {})
+    try:
+        return max(0, int(data.get("restores", 0))) if isinstance(data, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def count_restore():
+    path = usage_file()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_json(path, {"restores": restores_used() + 1})
+    except OSError:
+        pass
+
+
+def pro_hint(proj):
+    return "Your files are still saved in %s. Folder Undo Pro restores them in one step: %s\n" % (proj.dir, PRO_URL)
+
+
 # --------------------------------------------------------------------------- restore
 
 def agreed(args, io, question):
@@ -906,6 +954,8 @@ def write_rows(proj, rows, io, label):
                 os.remove(temp)
             except OSError:
                 pass
+    if done and not pro_here():
+        count_restore()
     io.out.write("\nWritten: %d file%s.\n" % (done, "" if done == 1 else "s"))
     if kept:
         io.out.write("The versions that were on disk are kept in %s/%s (restore %s puts them back).\n"
@@ -916,6 +966,9 @@ def write_rows(proj, rows, io, label):
 
 
 def cmd_restore(proj, args, io):
+    if not args.dry_run and not pro_here() and restores_used() >= FREE_RESTORES:
+        io.out.write(pro_hint(proj))
+        return 3
     words = list(args.what)
     filters_from = words
     extra = 0
@@ -1041,10 +1094,39 @@ def quoted(path):
     return '"%s"' % os.path.abspath(path).replace("\\", "/")
 
 
-def hook_groups(python, script, project):
-    base = "%s %s --project %s hook " % (python, quoted(script), quoted(project))
-    return (("PreToolUse", {"matcher": "Bash|PowerShell"}, base + "pre", 60),
-            ("SessionStart", {"matcher": "startup|resume|clear"}, base + "session-start", 120))
+def program_path(python):
+    """The interpreter as one program path, when --python names a file (quoted or not); otherwise None."""
+    text = (python or "").strip()
+    if len(text) > 1 and text[0] == text[-1] == '"':
+        text = text[1:-1]
+    return os.path.abspath(text).replace("\\", "/") if text and os.path.isfile(text) else None
+
+
+def hook_groups(python, script, project, program=None):
+    """The two hook handlers. With a program path they use exec form: Claude Code starts that program with these
+    arguments and no shell, so the hooks run the same with Git Bash, with PowerShell (Windows without Git for
+    Windows) and on macOS and Linux. A command name such as `python` keeps the shell form."""
+    groups = []
+    for event, extra, name, timeout in (("PreToolUse", {"matcher": "Bash|PowerShell"}, "pre", 60),
+                                        ("SessionStart", {"matcher": "startup|resume|clear"}, "session-start", 120)):
+        if program:
+            hook = {"type": "command", "command": program,
+                    "args": [os.path.abspath(script).replace("\\", "/"), "--project",
+                             os.path.abspath(project).replace("\\", "/"), "hook", name],
+                    "timeout": timeout}
+        else:
+            hook = {"type": "command", "command": "%s %s --project %s hook %s" % (python, quoted(script), quoted(project), name),
+                    "timeout": timeout}
+        groups.append((event, extra, hook))
+    return tuple(groups)
+
+
+def hook_text(hook):
+    """A hook handler as one line: the command and, in exec form, its arguments."""
+    if not isinstance(hook, dict):
+        return ""
+    args = hook.get("args")
+    return " ".join([str(hook.get("command", ""))] + ([str(a) for a in args] if isinstance(args, list) else []))
 
 
 def parse_settings(text):
@@ -1057,14 +1139,14 @@ def parse_settings(text):
 def with_hooks(data, groups):
     data = copy.deepcopy(data)
     hooks = data.setdefault("hooks", {})
-    for event, extra, command, timeout in groups:
+    for event, extra, hook in groups:
         current = hooks.setdefault(event, [])
         if not isinstance(current, list):
             raise ValueError("hooks.%s is not a list" % event)
-        present = any(h.get("command") == command for g in current if isinstance(g, dict)
-                      for h in g.get("hooks", []) if isinstance(h, dict))
+        present = any(h.get("command") == hook["command"] and h.get("args") == hook.get("args")
+                      for g in current if isinstance(g, dict) for h in g.get("hooks", []) if isinstance(h, dict))
         if not present:
-            current.append(dict(extra, hooks=[{"type": "command", "command": command, "timeout": timeout}]))
+            current.append(dict(extra, hooks=[dict(hook)]))
     return data
 
 
@@ -1077,7 +1159,7 @@ def without_hooks(data, mark):
         kept = []
         for group in hooks[event]:
             if isinstance(group, dict) and isinstance(group.get("hooks"), list):
-                inner = [h for h in group["hooks"] if not (isinstance(h, dict) and mark in str(h.get("command", "")))]
+                inner = [h for h in group["hooks"] if not (isinstance(h, dict) and mark in hook_text(h))]
                 if not inner:
                     continue
                 group = dict(group, hooks=inner)
@@ -1089,6 +1171,23 @@ def without_hooks(data, mark):
     if "hooks" in data and not data["hooks"]:
         del data["hooks"]
     return data
+
+
+MARKS = ("folder_undo.py", "folder_undo_pro.py")
+PRO_MARK = MARKS[1]
+
+
+def our_commands(data):
+    """The folder-undo hook commands already in a settings object, from any copy of the free or the Pro script."""
+    found = []
+    for groups in data.get("hooks", {}).values():
+        for group in groups if isinstance(groups, list) else []:
+            inner = group.get("hooks") if isinstance(group, dict) else None
+            for hook in inner if isinstance(inner, list) else []:
+                command = hook_text(hook)
+                if any(mark in command for mark in MARKS):
+                    found.append(command)
+    return found
 
 
 def read_bytes(path):
@@ -1120,37 +1219,77 @@ def settings_paths(proj, home):
 def cmd_install(proj, args, io, script, home=None):
     target, note_path = settings_paths(proj, home)
     old = read_bytes(target) if os.path.exists(target) else b""
+    python = args.python or ("python" if os.name == "nt" else "python3")
+    program = program_path(args.python) if args.python else None
+    portable = RUN["edition"].portable() if RUN.get("edition") and not args.python else None
+    if portable:
+        program, script = os.path.abspath(portable["python"]).replace("\\", "/"), portable["script"]
     try:
         data = parse_settings(old.decode("utf-8-sig"))
-        new = with_hooks(data, hook_groups(args.python, script, proj.root))
+        groups = hook_groups(python, script, proj.root, program)
+        new = with_hooks(data, groups)
+        earlier = our_commands(data) if new != data else []
+        if earlier:
+            if not RUN.get("edition") and any(PRO_MARK in command for command in earlier):
+                raise Stop("Folder Undo Pro hooks are already on in this project. Pro does everything the free "
+                           "version does, so nothing was changed.")
+            base = data
+            for mark in MARKS:
+                base = without_hooks(base, mark)
+            new = with_hooks(base, groups)
     except ValueError:
         raise Stop("%s is not valid JSON settings. Nothing was written. Fix or move that file first." % target)
     io.out.write("File: %s\n" % target)
     if new == data:
         io.out.write("Nothing to change: these hooks are already on.\n")
         return 0
-    if os.path.exists(note_path):
-        raise Stop("folder-undo hooks are already on in this project from another location. Run uninstall first.")
     folder = os.path.dirname(target)
+    first = read_json(note_path) if earlier and os.path.exists(note_path) else None
+    keep_first = (isinstance(first, dict) and first.get("written_sha256") == hashlib.sha256(old).hexdigest()
+                  and (not first.get("copy") or os.path.exists(os.path.join(folder, str(first["copy"])))))
     backup = target + ".bak-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    io.out.write("Copy of the current file: %s\n" % (backup if old else "(there is no current file)"))
+    if earlier:
+        kind = "Folder Undo Pro" if any(PRO_MARK in command for command in earlier) else "free folder-undo"
+        io.out.write("This project already has %s hooks. They are taken out and the ones below are put in. The "
+                     "copies and restore points in %s stay and are used as before.\n" % (kind, DIR))
+    if keep_first:
+        io.out.write("Copy of the file from before folder-undo was first turned on: %s\n"
+                     % (os.path.join(folder, first["copy"]) if first.get("copy") else "(there was no file)"))
+    else:
+        io.out.write("Copy of the current file: %s\n" % (backup if old else "(there is no current file)"))
     new_bytes = (json.dumps(new, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     show_change(io, old, new_bytes)
     ignore_file = os.path.join(proj.root, ".gitignore")
     lines = read_bytes(ignore_file).decode("utf-8-sig", "replace").splitlines() if os.path.exists(ignore_file) else []
     offer = GITIGNORE_LINE not in [line.strip() for line in lines] and (lines or os.path.isdir(os.path.join(proj.root, ".git")))
+    if portable:
+        io.out.write("Folder Undo Pro and its own Python are copied to %s, and the hooks run from there. "
+                     "The Python on this PC is not used or changed.\n" % portable["folder"])
     if offer and args.dry_run:
         io.out.write("You would also be asked whether to add %s to .gitignore.\n" % GITIGNORE_LINE)
     if not agreed(args, io, "Write this change?"):
         return 0
+    if portable:
+        try:
+            portable["copy"]()
+        except OSError as error:
+            raise Stop("could not copy Folder Undo Pro to %s (%s). Nothing was changed." % (portable["folder"], error))
     created = not os.path.isdir(folder)
     os.makedirs(folder, exist_ok=True)
-    if old:
+    if old and not keep_first:
         shutil.copy2(target, backup)
     write_bytes(target, new_bytes)
     json.loads(read_bytes(target).decode("utf-8-sig"))
-    write_json(note_path, {"copy": os.path.basename(backup) if old else None, "created_folder": created,
-                           "written_sha256": hashlib.sha256(new_bytes).hexdigest()})
+    written = hashlib.sha256(new_bytes).hexdigest()
+    if keep_first:          # uninstall still goes back to the file from before the first install
+        note = {"copy": first.get("copy"), "created_folder": bool(first.get("created_folder")), "written_sha256": written}
+    elif earlier:           # the file was changed by hand: uninstall takes out only the folder-undo hooks
+        note = {"copy": None, "created_folder": False, "written_sha256": None}
+    else:
+        note = {"copy": os.path.basename(backup) if old else None, "created_folder": created, "written_sha256": written}
+    if portable:
+        note["portable_folder"] = portable["folder"]
+    write_json(note_path, note)
     proj.ensure()
     io.out.write("\nWritten and read back. The hooks load when the next session starts in this project.\n")
     if offer:
@@ -1217,6 +1356,9 @@ def cmd_uninstall(proj, args, io, script, home=None):
             os.remove(note_path)
     io.out.write("\nDone. The hooks are off for this project. The %s folder with your copies, and any %s line in "
                  ".gitignore, are left as they are.\n" % (DIR, GITIGNORE_LINE))
+    if isinstance(note, dict) and note.get("portable_folder"):
+        io.out.write("The copy of Folder Undo Pro and its Python stays in %s. Your saved copies can still be put back "
+                     "from there, and you can delete that folder whenever you like.\n" % note["portable_folder"])
     return 0
 
 
@@ -1270,8 +1412,8 @@ def build_parser(edition=None):
     for name in ("install", "uninstall"):
         cmds[name] = sub.add_parser(name, help="turn the hooks %s for one project" % ("on" if name == "install" else "off"))
         cmds[name].add_argument("--dry-run", action="store_true", help="show the change and stop. Nothing is asked or written")
-        cmds[name].add_argument("--python", default="python" if os.name == "nt" else "python3",
-                                help="the interpreter the hooks are run with")
+        cmds[name].add_argument("--python", default=None, help="the interpreter the hooks are run with "
+                                "(default: python, or python3 outside Windows)")
     if edition:
         edition.extend(sub, cmds)
     return parser
@@ -1312,6 +1454,7 @@ def run_hook(args, edition, stdin):
 
 def main(argv=None, edition=None, home=None, out=None, ask=None, stdin=None):
     soft_stdio()
+    RUN["edition"], RUN["pro"] = edition, edition is not None
     argv = list(sys.argv[1:] if argv is None else argv)
     if "hook" in argv:
         try:

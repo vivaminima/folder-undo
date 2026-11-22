@@ -3,6 +3,7 @@
 Files are really deleted, moved and overwritten here (inside temporary folders) and then put back.
 Non-ASCII names are written as \\u escapes so that this file stays plain ASCII.
 """
+import contextlib
 import errno
 import io
 import json
@@ -23,6 +24,23 @@ SCRIPT = os.path.join(SRC, "folder_undo.py")
 ODD = "caf\u00e9 \ub178\ud2b8.md"          # e-acute, a space and two Hangul syllables
 POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 GIT = shutil.which("git")
+
+
+def run_hook(hook, payload):
+    """Start one hook handler the way Claude Code does. Exec form (with "args"): the program is started directly,
+    with no shell. Shell form: on Windows through PowerShell, which is what Claude Code uses when Git for Windows
+    is not installed (a line that PowerShell cannot read fails here as it does there); elsewhere through sh."""
+    if isinstance(hook.get("args"), list):
+        argv = [hook["command"]] + list(hook["args"])
+    elif os.name == "nt":
+        argv = [POWERSHELL or "powershell", "-NoProfile", "-NonInteractive", "-Command", hook["command"]]
+    else:
+        argv = ["sh", "-c", hook["command"]]
+    return subprocess.run(argv, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+
+
+def hook_of(data, event):
+    return data["hooks"][event][0]["hooks"][0]
 
 
 def find_bash():
@@ -48,6 +66,14 @@ class Base(unittest.TestCase):
         os.makedirs(self.away)
         self.proj = fu.Project(self.root)
         os.environ.pop("FOLDER_UNDO_NOW", None)
+        # Never touch the real usage file of this PC. Existing tests restore many times, so they run as Pro;
+        # the free-edition tests below switch to "free".
+        self.state = os.path.join(self.tmp, "state")
+        # (and Pro's portable install goes to a temporary folder, never to the real %LOCALAPPDATA%)
+        for key, value in (("FOLDER_UNDO_STATE_DIR", self.state), ("FOLDER_UNDO_EDITION", "pro"),
+                           ("FOLDER_UNDO_PRO_HOME", os.path.join(self.tmp, "pro-home"))):
+            os.environ[key] = value
+            self.addCleanup(os.environ.pop, key, None)
 
     def put(self, rel, text="one\n", base=None):
         path = os.path.join(base or self.root, *rel.split("/"))
@@ -684,6 +710,36 @@ class InstallTest(Base):
         self.assertEqual(code, 0, text)
         self.assertEqual(fu.read_json(self.settings()), {"model": "added later"})
 
+    def test_hooks_from_another_location_are_swapped_and_a_hand_edit_survives_uninstall(self):
+        self.cli("install", "--python", "py -3", answers=["y"])
+        data = fu.read_json(self.settings())
+        data["model"] = "added later"
+        fu.write_json(self.settings(), data)
+        code, text = self.cli("install", answers=["y"])
+        self.assertEqual(code, 0, text)
+        self.assertIn("already has free folder-undo hooks", text)
+        commands = [h["command"] for groups in fu.read_json(self.settings())["hooks"].values() for g in groups for h in g["hooks"]]
+        self.assertEqual(len(commands), 2, commands)
+        self.assertFalse(any(c.startswith("py -3") for c in commands))
+        code, text = self.cli("uninstall", answers=["y"])
+        self.assertEqual(code, 0, text)
+        self.assertEqual(fu.read_json(self.settings()), {"model": "added later"})
+
+    def test_the_free_install_leaves_pro_hooks_alone(self):
+        other = os.path.join(self.tmp, "pro package").replace("\\", "/")
+        pro_hook = '"%s/python.exe" "%s/folder_undo_pro.py" --project "%s" hook pre' % (other, other, self.root.replace("\\", "/"))
+        os.makedirs(os.path.dirname(self.settings()))
+        original = json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": pro_hook}]}]}}).encode()
+        with open(self.settings(), "wb") as handle:
+            handle.write(original)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code, text = self.cli("install", answers=["y"])
+        self.assertEqual(code, 3, text)
+        self.assertIn("Pro does everything the free version does", err.getvalue())
+        with open(self.settings(), "rb") as handle:
+            self.assertEqual(handle.read(), original)
+
     def test_refuses_the_user_wide_file_and_broken_json(self):
         code, _ = self.cli("install", answers=["y"], home=self.root)
         self.assertEqual(code, 3)
@@ -713,19 +769,190 @@ class InstallTest(Base):
         self.put("a.txt", "a\n")
         self.cli("install", "--python", '"%s"' % sys.executable.replace("\\", "/"), answers=["y"])
         data = fu.read_json(self.settings())
-        start = data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-        before = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        done = subprocess.run(start, shell=True, input=json.dumps({"session_id": "s1", "source": "startup"}).encode(),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for event in ("PreToolUse", "SessionStart"):                   # a python given as a file: exec form, no shell
+            self.assertEqual(hook_of(data, event)["command"], sys.executable.replace("\\", "/"))
+        done = run_hook(hook_of(data, "SessionStart"), json.dumps({"session_id": "s1", "source": "startup"}).encode())
         self.assertEqual(done.returncode, 0, done.stderr)
-        done = subprocess.run(before, shell=True, input=json.dumps(self.payload("rm a.txt", "Bash")).encode(),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        done = run_hook(hook_of(data, "PreToolUse"), json.dumps(self.payload("rm a.txt", "Bash")).encode())
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(len(self.proj.sessions()), 1)
         self.assertEqual(self.copied(), {"a.txt"})
 
+    @unittest.skipUnless(os.name == "nt" and POWERSHELL and shutil.which("python"), "needs Windows, PowerShell and python on PATH")
+    def test_the_default_shell_form_runs_in_powershell(self):
+        """Claude Code on Windows without Git for Windows runs shell-form hooks in PowerShell."""
+        self.put("a.txt", "a\n")
+        self.cli("install", answers=["y"])
+        data = fu.read_json(self.settings())
+        self.assertTrue(hook_of(data, "PreToolUse")["command"].startswith('python "'))
+        done = run_hook(hook_of(data, "SessionStart"), json.dumps({"session_id": "s1", "source": "startup"}).encode())
+        self.assertEqual(done.returncode, 0, done.stderr.decode("cp949", "replace"))
+        done = run_hook(hook_of(data, "PreToolUse"), json.dumps(self.payload("Remove-Item a.txt", "PowerShell")).encode())
+        self.assertEqual(done.returncode, 0, done.stderr.decode("cp949", "replace"))
+        self.assertEqual((len(self.proj.sessions()), self.copied()), (1, {"a.txt"}))
 
-BOM_Y = b"\xef\xbb\xbfy\r\n"          # what Windows PowerShell 5.1 pipes for "y" when its output encoding is UTF-8
+    @unittest.skipUnless(os.name == "nt" and POWERSHELL, "PowerShell is not on this machine")
+    def test_powershell_cannot_run_a_line_that_starts_with_a_quoted_path(self):
+        """Why a python given as a full path uses exec form: the same line in shell form fails in PowerShell."""
+        line = '"%s" "%s" --project "%s" hook pre' % (sys.executable.replace("\\", "/"), SCRIPT.replace("\\", "/"),
+                                                     self.root.replace("\\", "/"))
+        done = run_hook({"type": "command", "command": line}, json.dumps(self.payload("rm a.txt", "Bash")).encode())
+        self.assertNotEqual(done.returncode, 0)
+
+
+BLOCKING_WORDS = ("can't", "cannot", "not allowed", "blocked", "limit reached", "sorry")
+
+
+class FreeOnceTest(Base):
+    """Free edition: copies are always made; restore works once per PC, then points to Pro."""
+
+    def setUp(self):
+        Base.setUp(self)
+        os.environ["FOLDER_UNDO_EDITION"] = "free"
+        for name in ("a.txt", "dir/b.txt"):
+            self.put(name, "keep " + name + "\n")
+        self.pre("rm a.txt dir/b.txt", "Bash")
+        self.ident = self.proj.copies()[0]["id"]
+        self.usage = os.path.join(self.state, "usage.json")
+        self.wipe()
+
+    def wipe(self):
+        for name in ("a.txt", "dir/b.txt"):
+            path = os.path.join(self.root, *name.split("/"))
+            if os.path.exists(path):
+                os.remove(path)
+
+    def test_first_restore_works_and_is_counted(self):
+        self.assertFalse(os.path.exists(self.usage))
+        code, text = self.cli("restore", self.ident, answers=["y"])
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.text("a.txt"), "keep a.txt\n")
+        self.assertEqual(fu.read_json(self.usage), {"restores": 1})
+
+    def test_second_restore_gives_the_way_to_pro_and_changes_nothing(self):
+        self.assertEqual(self.cli("restore", self.ident, answers=["y"])[0], 0)
+        self.wipe()
+        code, text = self.cli("restore", self.ident, answers=["y"])
+        self.assertEqual(code, 3)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(text, "Your files are still saved in %s. Folder Undo Pro restores them in one step: %s\n"
+                         % (self.proj.dir, fu.PRO_URL))
+        for word in BLOCKING_WORDS:
+            self.assertNotIn(word, text.lower())
+        self.assertFalse(self.there("a.txt"))
+        self.assertFalse(self.there("dir/b.txt"))
+        self.assertEqual(fu.read_json(self.usage), {"restores": 1})          # the hint is not a restore
+        self.assertEqual(len(self.proj.copies()), 1)                          # the copy is still there
+
+    def test_list_show_and_the_copying_itself_stay_free(self):
+        self.assertEqual(self.cli("restore", self.ident, answers=["y"])[0], 0)
+        self.assertEqual(self.cli("list")[0], 0)
+        self.assertEqual(self.cli("show", self.ident)[0], 0)
+        self.put("c.txt")
+        self.pre("rm c.txt", "Bash")
+        self.assertEqual(len(self.proj.copies()), 2)
+        self.assertEqual(self.cli("restore", self.proj.copies()[1]["id"], "--dry-run")[0], 0)     # looking is free too
+
+    def test_cancelling_with_n_is_not_counted(self):
+        for answer in ("n", "", "no"):
+            code, text = self.cli("restore", self.ident, answers=[answer])
+            self.assertEqual(code, 0)
+            self.assertIn("Cancelled", text)
+        self.assertFalse(os.path.exists(self.usage))
+        self.assertEqual(self.cli("restore", self.ident, answers=["y"])[0], 0)
+
+    def test_nothing_to_restore_is_not_counted(self):
+        self.assertEqual(self.cli("restore", self.ident, answers=["y"])[0], 0)
+        os.remove(self.usage)
+        code, text = self.cli("restore", self.ident, answers=["y"])        # the files are all back: nothing to do
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing to do", text)
+        self.assertFalse(os.path.exists(self.usage))
+
+    def test_restore_session_counts_the_same_way(self):
+        self.put("z.txt", "z\n")
+        fu.snapshot(self.proj, "s1")
+        os.remove(os.path.join(self.root, "z.txt"))
+        self.assertEqual(self.cli("restore", "--session", answers=["y"])[0], 0)
+        self.assertEqual(self.text("z.txt"), "z\n")
+        self.assertEqual(fu.read_json(self.usage), {"restores": 1})
+        self.wipe()
+        self.assertEqual(self.cli("restore", "--session", answers=["y"])[0], 3)
+        self.assertEqual(self.cli("restore", self.ident, answers=["y"])[0], 3)
+
+    def test_a_broken_or_unreadable_usage_file_counts_as_zero(self):
+        os.makedirs(self.state)
+        for junk in (b"", b"not json", b"[1]", b'{"restores": "many"}', b"\xff\xfe\x00"):
+            with open(self.usage, "wb") as handle:
+                handle.write(junk)
+            self.assertEqual(fu.restores_used(), 0, junk)
+        os.remove(self.usage)
+        os.makedirs(self.usage)                                        # a folder where the file should be
+        self.addCleanup(shutil.rmtree, self.usage, ignore_errors=True)
+        self.assertEqual(fu.restores_used(), 0)
+        code, text = self.cli("restore", self.ident, answers=["y"])
+        self.assertEqual(code, 0, text)                                  # a customer is never stopped by the counter
+        self.assertEqual(self.text("a.txt"), "keep a.txt\n")
+
+    def test_pro_is_neither_counted_nor_stopped(self):
+        os.environ["FOLDER_UNDO_EDITION"] = "pro"
+        for _ in range(3):
+            self.wipe()
+            code, text = self.cli("restore", self.ident, answers=["y"])
+            self.assertEqual(code, 0, text)
+            self.assertEqual(self.text("dir/b.txt"), "keep dir/b.txt\n")
+        self.assertFalse(os.path.exists(self.usage))
+
+    def test_the_count_is_per_pc_not_per_folder(self):
+        self.assertEqual(self.cli("restore", self.ident, answers=["y"])[0], 0)
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        proj = fu.Project(other)
+        with open(os.path.join(other, "x.txt"), "w") as handle:
+            handle.write("x")
+        fu.hook_pre(proj, {"cwd": other, "tool_name": "Bash", "tool_input": {"command": "rm x.txt"}})
+        os.remove(os.path.join(other, "x.txt"))
+        out = io.StringIO()
+        code = fu.main(["--project", other, "restore", proj.copies()[0]["id"]], out=out, ask=lambda q: "y")
+        self.assertEqual(code, 3)
+        self.assertFalse(os.path.exists(os.path.join(other, "x.txt")))
+
+    def test_usage_file_places(self):
+        os.environ.pop("FOLDER_UNDO_STATE_DIR")
+        if os.name == "nt":
+            old = os.environ.get("LOCALAPPDATA")
+            os.environ["LOCALAPPDATA"] = os.path.join(self.tmp, "local")
+            if old:
+                self.addCleanup(os.environ.__setitem__, "LOCALAPPDATA", old)
+            self.assertEqual(fu.usage_file(), os.path.join(self.tmp, "local", "folder-undo", "usage.json"))
+        else:
+            self.assertEqual(fu.usage_file(), os.path.join(os.path.expanduser("~"), ".local", "state", "folder-undo", "usage.json"))
+
+    def run_script(self, folder, *argv):
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        env.pop("FOLDER_UNDO_EDITION")
+        done = subprocess.run([sys.executable, "-I", os.path.join(folder, "folder_undo.py"), "--project", self.root] + list(argv),
+                              input=b"y\n", env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        return done.returncode, done.stdout.decode("utf-8", "replace")
+
+    def test_pro_is_recognised_by_its_file_next_to_the_script(self):
+        free_dir, pro_dir = os.path.join(self.tmp, "free-dir"), os.path.join(self.tmp, "pro-dir")
+        for folder in (free_dir, pro_dir):
+            os.makedirs(folder)
+            shutil.copyfile(SCRIPT, os.path.join(folder, "folder_undo.py"))
+        with open(os.path.join(pro_dir, "folder_undo_pro.py"), "w") as handle:
+            handle.write("# stands in for the Pro file\n")
+        self.assertEqual(self.run_script(free_dir, "restore", self.ident)[0], 0)
+        self.wipe()
+        code, text = self.run_script(free_dir, "restore", self.ident)
+        self.assertEqual(code, 3, text)
+        self.assertIn("Folder Undo Pro restores them in one step", text)
+        for _ in range(2):
+            self.wipe()
+            self.assertEqual(self.run_script(pro_dir, "restore", self.ident)[0], 0)
+
+
+BOM_Y = b"\xef\xbb\xbfy\r\n"        # what Windows PowerShell 5.1 pipes for "y" when its output encoding is UTF-8
 
 
 def ps_quote(text):
@@ -750,7 +977,7 @@ class PipedAnswerCases:
         self.assertEqual(code, 0, text)
         self.assertNotIn("Cancelled", text)
         self.assertIn("Written and read back", text)
-        command = fu.read_json(self.settings())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        command = fu.hook_text(hook_of(fu.read_json(self.settings()), "SessionStart"))
         self.assertIn(os.path.basename(self.script), command)
         code, text = self.piped("uninstall")
         self.assertEqual(code, 0, text)

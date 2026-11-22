@@ -2,6 +2,58 @@
 
 ![folder-undo: a copy before the shell deletes it](docs/folder-undo_banner.png)
 
+**You asked AI to tidy a folder. Now the files are gone?**
+
+When Claude deletes files with a command, they skip the Recycle Bin. Claude Code's /rewind can't bring them back either. folder-undo copies each file right before it gets deleted. Lost something? Just say "bring it back."
+
+We tried it ourselves, in a real Claude Code window. We wiped a docs folder with one command and brought every file back. Not one character changed, and the modified times match too.
+
+**This free version is a one-time trial: it restores once on each PC.** To keep restoring, use [Folder Undo Pro](https://vivastory4.gumroad.com/l/folder-undo-pro?utm_source=github-readme).
+
+## Try it free (one restore)
+
+- It copies your files before every delete, every time.
+- **It restores once.** Your first restore on each PC is free, and it is a one-time restore.
+- After that, your copies stay right in your folder, in `.folder-undo`, and Pro puts them all back in one step.
+
+**Want to keep using it?** Get [Folder Undo Pro](https://vivastory4.gumroad.com/l/folder-undo-pro?utm_source=github-readme). It restores as many times as you need, including the copies this free version already made.
+
+## Install by asking Claude
+
+1. **Download it.** On this page, click the green **Code** button, then **Download ZIP**. Unzip it anywhere.
+2. **Say one line to Claude**, from that folder:
+   "Install folder-undo in my project folder. Show me the changes first."
+3. **Press y once.** Claude shows you the lines it will change, then waits for your y.
+
+It turns on from your next window. Your existing settings stay as they are.
+
+What you need: Python 3.10 or newer on your PC (free version). Pro for Windows comes with Python 3.13 inside, so there is nothing to install.
+
+## Using it is just talking
+
+When files are gone, tell Claude:
+
+"Show me what you can restore, then restore it"
+
+## Folder Undo Pro
+
+Pay once. Using the free version already? One y switches you to Pro.
+
+- Restore as many times as you need, the free version's copies too
+- Pick a restore point from your last 10 sessions
+- See the past versions of a single file
+- A one-page report for each session
+- Optional, off by default: stops commands that try to delete outside your folder
+- Windows: Python 3.13 included, no install needed
+
+Get it here: [Folder Undo Pro](https://vivastory4.gumroad.com/l/folder-undo-pro?utm_source=github-readme)
+
+## Running a one-person business?
+
+No one else will undo it for you. Client files, quotes, your books: one AI command can wipe them, and the Recycle Bin won't have them. Your first restore is free. To keep restoring after that, use [Folder Undo Pro](https://vivastory4.gumroad.com/l/folder-undo-pro?utm_source=github-readme).
+
+## How it works
+
 Keeps a copy of a file right before a shell command deletes, moves or overwrites it — the part Claude Code's rewind doesn't cover.
 
 Claude Code's checkpoints track the edits made by its file editing tools. Its documentation lists
@@ -21,7 +73,7 @@ Reading a command does not catch every form (for example, a file deleted from in
 That is why a restore point of the whole folder is kept when a session starts. Restore points for
 several sessions and a report are in Pro.
 
-## What the free edition does
+### What the free edition does
 
 Copies are always made, as often as a command needs one. `list` and `show` are always open.
 **`restore` puts files back once on each PC.** Run it on the file that matters most. After that,
@@ -33,7 +85,7 @@ The count is kept per PC in a small file: `%LOCALAPPDATA%\folder-undo\usage.json
 file. Typing `n` at the question, or a restore that has nothing to write, does not count.
 `restore --dry-run` is always open.
 
-## Quick start
+### Commands
 
 Put `folder_undo.py` anywhere on your machine, then turn the hooks on for one project:
 
@@ -77,7 +129,7 @@ python folder_undo.py --project path/to/project uninstall
 the file in the meantime, it takes out only its own two hooks and keeps the rest. Your copies in
 `.folder-undo/` stay where they are.
 
-## What it covers
+### What it covers
 
 Each form below has a test in `tests/` that copies real files and puts them back.
 
@@ -99,7 +151,7 @@ What is left alone, by design:
 - Whatever is skipped (too large, unreadable, a path with a variable in it) gets one line in
   `.folder-undo/skipped.log`. The hooks always exit 0.
 
-## What it needs
+### What it needs
 
 - Python 3.10 or newer. No pip install: one file, standard library only.
 - No network calls.
@@ -107,14 +159,6 @@ What is left alone, by design:
 - Tested on Windows 11 with Python 3.10 and Windows PowerShell 5.1: 71 tests, also run in a console
   that cannot print every character (cp949). Run them yourself with
   `python -m unittest discover -s tests`.
-
-## Pro
-
-Folder Undo Pro restores as often as you like, and adds restore points for the last 10 sessions,
-the version history of one file, an HTML report of what changed in each session, and an optional
-stop for commands that reach outside the project. A copy the free edition made is put back
-by Pro as it is.
-Link: https://vivastory4.gumroad.com/l/folder-undo-pro
 
 ## Licence
 
